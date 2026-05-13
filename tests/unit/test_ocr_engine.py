@@ -50,7 +50,7 @@ class testocrengine(unittest.TestCase):
             "width":[10,0,50]
 
         }
-        result=self.ocr.extract_physical_text_with_boxes(self.sample,min_con=65)
+        result=self.ocr.extract_physical_text_with_boxes(self.sample)
         expected=[
             {"text":"hello",
              "box":{
@@ -78,20 +78,7 @@ class testocrengine(unittest.TestCase):
         self.assertEqual(result,expected)
         mock_data.assert_called_once()
 
-    @patch("core.perception.ocr_engine.pytesseract.image_to_data") 
-    def test_boxes_confidence_filter(self,mock_data):
-        mock_data.return_value={
-            "text":["l","h"],
-            "conf":[40,90],
-            "left":[0,10],
-            "top":[0,10],
-            "width": [20,20],
-            "height": [10,10]
-        }
-        result=self.ocr.extract_physical_text_with_boxes(self.sample,min_con=65)
-        self.assertEqual(len(result),1)
-        self.assertEqual(result[0]["text"],"h")     
-        mock_data.assert_called_once()  
+     
 
 
 

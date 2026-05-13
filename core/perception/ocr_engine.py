@@ -36,17 +36,23 @@ class OCREngine:
         
 
 
-    def extract_physical_text_with_boxes(self,array:np.ndarray,min_con:int=-1)  :
+    def extract_physical_text_with_boxes(self,array:np.ndarray)  :
         
         valid=self.validate_frame(array)
         if not valid :
             return []
 
-        gray=cv2.cvtColor(array,cv2.COLOR_BGR2GRAY)
+        gray=cv2.cvtColor(array,cv2.COLOR_BGR2GRAY)  
+        
+        
+        
+
+  
 
 
     
         denoised=cv2.fastNlMeansDenoising(gray, h=10)
+        
         processed = cv2.adaptiveThreshold(
             denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
             cv2.THRESH_BINARY, 11, 2
@@ -54,7 +60,7 @@ class OCREngine:
 
     )
         pil_image=self.convert_to_pil_image(processed)
-        data = pytesseract.image_to_data(pil_image, output_type=pytesseract.Output.DICT,config='--oem 3 --psm 6')
+        data = pytesseract.image_to_data(pil_image, output_type=pytesseract.Output.DICT,config='--oem 3 --psm 3')
         
         
         final=[]
@@ -64,7 +70,7 @@ class OCREngine:
     
 
 
-            if data["conf"][i]<=min_con and text=="" :
+            if  text=="" :
                 continue
             try :
                 conf=float(data["conf"][i])
@@ -72,10 +78,16 @@ class OCREngine:
                 continue
             if not re.search(r"[A-Za-z0-9]", text):
                 continue
-            if len(text) <= 2 and conf < 75:
+            
+    
+            if len(text) <= 3 and conf < 80:
                 continue
-            if conf<25 :
+            if conf<23:
                 continue
+
+           
+
+
 
     
 
@@ -84,7 +96,7 @@ class OCREngine:
            
 
 
-            if conf>=min_con and text!="":
+            if   text!="":
                 final.append({
                     "text":text,
                     "box":{
