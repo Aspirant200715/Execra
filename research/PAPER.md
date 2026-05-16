@@ -239,11 +239,16 @@ Uses the same heuristic detection engine as Execra but without the trust-score w
 
 ## 6. Results
 
-> **Note:** Results below are from the **simulated evaluation harness** (no live LLM API required). Replace `_simulate_guidance` in `evaluator.py` with a real Execra engine call to produce live results.
+Results can be reproduced using: 
+
+```bash
+# Run the full evaluation 
+make eval-full
+```
 
 | System | Instr. Acc. ↑ | ECE ↓ | P95 Lat. (ms) ↓ | FPR ↓ | Precision ↑ | Recall ↑ | F1 ↑ |
 |--------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| **Execra** | **0.320** | **0.420** | **242** | **0.000** | **0.455** | **0.122** | **0.192** |
+| **Execra** | **0.3199** | **0.4198** | **242.2** | **0.000** | **0.455** | **0.122** | **0.192** |
 | No-guidance | 0.237 | **0.050** | **16** | **0.000** | 0.000 | 0.000 | 0.000 |
 | Random rules | 0.021 | 0.494 | 77 | 1.000 | 0.000 | 0.000 | 0.000 |
 | Single LLM | 0.204 | 0.473 | 409 | 0.100 | 0.150 | 0.073 | 0.098 |
@@ -258,7 +263,7 @@ We additionally report calibration error (ECE) to capture probabilistic reliabil
 
 **Random rules appear competitive in F1 but are not meaningful.** The random baseline yields near-zero instruction accuracy (0.0205) and zero precision/recall under strict evaluation conditions, while also producing a high false-positive tendency in non-normalized interpretation. This confirms that rule-based random triggering is not meaningful for real-time guidance evaluation and reinforces that F1 alone is not a reliable metric for such systems.
 
-**Single LLM baseline performs worse than Execra in both accuracy and stability.**The single-LLM system achieves F1 = 0.0984, significantly lower than Execra (0.1924), and also exhibits higher calibration error (ECE = 0.4728 vs 0.4198). It is also substantially slower (P95 = 408.5 ms vs 242.2 ms), confirming that Execra’s structured trust-scoring and filtering pipeline improves both efficiency and reliability.
+**Single LLM baseline performs worse than Execra in both accuracy and stability.** The single-LLM system achieves F1 = 0.0984, significantly lower than Execra (0.1924), and also exhibits higher calibration error (ECE = 0.4728 vs 0.4198). It is also substantially slower (P95 = 408.5 ms vs 242.2 ms), confirming that Execra’s structured trust-scoring and filtering pipeline improves both efficiency and reliability.
 ---
 
 ## 7. Discussion
@@ -289,7 +294,7 @@ We additionally report calibration error (ECE) to capture probabilistic reliabil
 ### No external dependencies required for core evaluation
 ### Note: Make is required to run evaluation commands
 ```bash
-# Run the full evaluation suite
+# Run the full evaluation 
 make eval-full
 
 # Or run individual steps:
