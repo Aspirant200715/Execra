@@ -19,7 +19,7 @@ class Settings:
     """
 
     # LLM Configuration
-    LLM_BACKEND: str = "gpt-4o"
+    LLM_BACKEND: str = "openai"
     OPENAI_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
 
