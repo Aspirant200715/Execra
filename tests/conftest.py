@@ -1,17 +1,7 @@
 import pytest
 from core.config import Settings
 
-@pytest.fixture
-def mock_settings():
-    """
-    Returns a fresh Settings instance for testing.
-    """
-    return Settings(
-        LLM_BACKEND="test-model",
-        OPENAI_API_KEY="test-key",
-        GEMINI_API_KEY="test-key",
-        API_PORT=9999
-    )
+
 
 @pytest.fixture
 def api_base_url():
@@ -35,6 +25,7 @@ def sample_frame() -> np.ndarray:
 def mock_settings() -> Settings:
     """Return a Settings object configured for tests."""
     settings = Settings()
+    settings.LLM_BACKEND = "test-model"
     settings.OPENAI_API_KEY = "test-openai-key"
     settings.GEMINI_API_KEY = "test-gemini-key"
     settings.SCREEN_CAPTURE_FPS = 1
