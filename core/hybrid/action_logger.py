@@ -6,7 +6,9 @@ import aiosqlite
 import os
 import uuid
 from core.security.crypto import encrypt,decrypt
+import logging
 
+logger = logging.getLogger(__name__)
 
 class ActionRecord(BaseModel):
     id: str
