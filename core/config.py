@@ -31,6 +31,9 @@ class Settings:
     OPENAI_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
 
+    # Security
+    ENCRYPTION_KEY: str = ""
+
     # Screen Capture & Detection
     SCREEN_CAPTURE_FPS: int = 2
     DETECTION_THRESHOLD: float = 0.5
@@ -76,6 +79,10 @@ class Settings:
             self.OPENAI_API_KEY = env_val
         if env_val := os.getenv("GEMINI_API_KEY"):
             self.GEMINI_API_KEY = env_val
+
+        # Security
+        if env_val := os.getenv("ENCRYPTION_KEY"):
+            self.ENCRYPTION_KEY = env_val
 
         # Screen Capture & Detection
         if env_val := os.getenv("SCREEN_CAPTURE_FPS"):
@@ -124,6 +131,7 @@ class Settings:
         required_fields = {
             "OPENAI_API_KEY": self.OPENAI_API_KEY,
             "GEMINI_API_KEY": self.GEMINI_API_KEY,
+            "ENCRYPTION_KEY": self.ENCRYPTION_KEY,
         }
 
         missing = [key for key, value in required_fields.items() if not value]
