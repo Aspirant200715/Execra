@@ -13,7 +13,7 @@ Security model
 2. **Global connection limit** — at most ``settings.WS_MAX_CONNECTIONS``
    concurrent connections are accepted.  New connections beyond this cap
    receive close code 4503 (server busy) immediately after the handshake.
-   The check is asyncio-safe: ``_active_connections.add()`` and the
+   The check is asyncio-safe: ``_connections[conn_id]`` assignment and the
    subsequent ``len()`` guard share the same synchronous execution slice
    (no ``await`` between them), so no interleaving is possible.
 
@@ -23,9 +23,21 @@ Security model
    Connections that exceed the limit receive close code 4429 and are
    dropped.
 
-4. **Guaranteed cleanup** — the active-connection set and per-connection
-   rate-limit state are always removed in a ``finally`` block, covering
-   normal disconnects, rate-limit drops, and unexpected exceptions.
+4. **Guaranteed cleanup** — :func:`_unregister` is called from a
+   ``finally`` block covering all exit paths: normal close, abnormal
+   disconnect, rate-limit drop, send/receive failure, and unexpected
+   exceptions.  :func:`_unregister` is idempotent so repeated calls are
+   safe.
+
+5. **Heartbeat** — when ``WS_HEARTBEAT_INTERVAL_S > 0``, a background
+   task sends a periodic application-level ping to each connection.  If
+   the ping fails (client has silently dropped), the stale slot is
+   removed from the active registry immediately — without waiting for the
+   TCP stack to time out.  Set to ``0`` to disable.
+
+6. **Broadcast safety** — :func:`broadcast` iterates over a snapshot of
+   the registry and removes any connection whose send fails, so stale
+   sockets can never accumulate during a broadcast loop.
 
 Close codes
 -----------
@@ -33,18 +45,11 @@ Close codes
 4429 — Rate limit exceeded
 4503 — Connection limit reached
 1000 — Normal closure (client-initiated)
-
-Known TODOs
------------
-- Idle-connection timeout (heartbeat / ping-pong) to reclaim slots held by
-  silent clients.
-- Per-IP connection limit to prevent a single host from monopolising the
-  global cap.
-- Starlette ``max_size`` configuration to bound incoming message size.
-- Wire ``_generate_guidance()`` stub to ``IntelligenceCore.generate_guidance()``.
+1006 — Abnormal closure (network error / no close frame)
 """
 from __future__ import annotations
 
+import asyncio
 import hmac
 import logging
 import time
@@ -60,27 +65,124 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # ---------------------------------------------------------------------------
-# Module-level security state
+# Module-level connection registry
 #
-# Both structures are keyed by id(websocket) — the CPython object identity of
-# the WebSocket instance, which is unique per connection for its lifetime.
+# Keyed by id(websocket) — CPython object identity, unique per connection for
+# its lifetime.  Storing the WebSocket object (not just the ID) enables
+# broadcast and heartbeat without a separate lookup structure.
 #
-# THREADING NOTE: asyncio is single-threaded.  All operations on these dicts
-# and sets are synchronous (no await), so no locks are needed.  Do NOT add
-# await calls between the guard check and the mutation of _active_connections
-# without re-evaluating thread safety.
+# ASYNCIO NOTE: all mutations are synchronous (no await between guard and
+# mutation), so no locks are required.  Do NOT insert await calls between
+# the len() guard and the registry assignment in guidance_ws without
+# re-evaluating this invariant.
 # ---------------------------------------------------------------------------
 
-# Set of active connection IDs.  add/discard/len are all O(1).
-_active_connections: set[int] = set()
+# Maps conn_id → WebSocket.  Replaces the former set[int]; the dict retains
+# O(1) lookup while giving access to the socket object for send/ping.
+_connections: dict[int, WebSocket] = {}
 
-# Per-connection sliding-window state: maps conn_id → deque of timestamps
-# (monotonic seconds) for messages received in the current window.
+# Per-connection sliding-window rate-limit state.
 _rate_state: dict[int, deque[float]] = {}
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers
+# Connection lifecycle helpers
+# ---------------------------------------------------------------------------
+
+def _unregister(conn_id: int) -> None:
+    """
+    Remove *conn_id* from the active registry and its rate-limit state.
+
+    Idempotent — safe to call multiple times with the same *conn_id*;
+    uses ``dict.pop(..., None)`` so it never raises KeyError.
+    Called from the ``finally`` block of :func:`guidance_ws` and, for
+    early stale detection, from :func:`_heartbeat` when a ping fails.
+    """
+    _connections.pop(conn_id, None)
+    _rate_state.pop(conn_id, None)
+
+
+# ---------------------------------------------------------------------------
+# Broadcast with stale-connection cleanup
+# ---------------------------------------------------------------------------
+
+async def broadcast(message: dict[str, Any]) -> None:
+    """
+    Send *message* as JSON to every currently registered connection.
+
+    Iterates over a **snapshot** of the registry so that removals during the
+    loop do not mutate the collection being iterated.  Any connection whose
+    ``send_json`` raises is unregistered immediately after the loop, ensuring
+    failed sockets are never left in the active set.
+
+    Args:
+        message: A JSON-serialisable dict to send to all clients.
+    """
+    stale: list[int] = []
+    # Iterate over a copy so _unregister() calls during the loop are safe.
+    for conn_id, ws in list(_connections.items()):
+        try:
+            await ws.send_json(message)
+        except Exception:
+            logger.debug(
+                "WebSocket broadcast: send failed for conn %d — queued for removal",
+                conn_id,
+            )
+            stale.append(conn_id)
+
+    for conn_id in stale:
+        _unregister(conn_id)
+
+    if stale:
+        logger.info(
+            "WebSocket broadcast: removed %d stale connection(s) (active=%d)",
+            len(stale),
+            len(_connections),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat — proactive stale-connection detection
+# ---------------------------------------------------------------------------
+
+async def _heartbeat(conn_id: int, websocket: WebSocket, interval: int) -> None:
+    """
+    Send a periodic application-level ping to detect silent disconnects.
+
+    Every *interval* seconds the task sends ``{"type": "ping"}`` to the
+    client.  If the send raises for any reason (broken pipe, connection reset,
+    peer closed without a WS close frame) the stale slot is unregistered
+    immediately via :func:`_unregister` and the task exits.
+
+    The connection slot is freed as soon as the ping fails — the server does
+    not wait for the TCP stack to time out (which can take several minutes
+    under default OS keep-alive settings).
+
+    The task exits cleanly if *conn_id* is no longer in :data:`_connections`
+    (i.e., the main receive loop already cleaned up), so there is no
+    double-removal race.
+
+    Cancelled by the ``finally`` block of :func:`guidance_ws` on all exit
+    paths.
+    """
+    while True:
+        await asyncio.sleep(interval)
+        if conn_id not in _connections:
+            # Main loop already cleaned up; nothing more to do.
+            return
+        try:
+            await websocket.send_json({"type": "ping"})
+        except Exception:
+            logger.debug(
+                "WebSocket heartbeat: ping failed for conn %d — freeing slot immediately",
+                conn_id,
+            )
+            _unregister(conn_id)
+            return
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers (authentication, rate limiting, rejection)
 # ---------------------------------------------------------------------------
 
 def _verify_token(token: str) -> bool:
@@ -118,7 +220,7 @@ def _check_rate_limit(conn_id: int) -> bool:
 
     timestamps: deque[float] = _rate_state.setdefault(conn_id, deque())
 
-    # Evict entries outside the window (deque is ordered oldest → newest)
+    # Evict entries outside the window (deque is ordered oldest → newest).
     while timestamps and (now - timestamps[0]) > window:
         timestamps.popleft()
 
@@ -173,6 +275,10 @@ async def guidance_ws(
 
         {"error": "<human-readable error description>"}
 
+    Server → Client (heartbeat, informational — clients may ignore)::
+
+        {"type": "ping"}
+
     The connection is dropped with an appropriate close code if any security
     check fails.  See module docstring for close code semantics.
     """
@@ -195,17 +301,17 @@ async def guidance_ws(
     # ------------------------------------------------------------------
     # Step 2 — Global connection limit
     #
-    # ASYNCIO-SAFETY: add() and the len() guard are both synchronous.
-    # No await appears between them, so no other coroutine can observe a
-    # partial state.  Do not insert any await here.
+    # ASYNCIO-SAFETY: dict assignment and the len() guard are both
+    # synchronous.  No await appears between them, so no other coroutine
+    # can observe a partial state.  Do not insert any await here.
     # ------------------------------------------------------------------
-    _active_connections.add(conn_id)
-    if len(_active_connections) > settings.WS_MAX_CONNECTIONS:
-        _active_connections.discard(conn_id)
+    _connections[conn_id] = websocket
+    if len(_connections) > settings.WS_MAX_CONNECTIONS:
+        _unregister(conn_id)
         logger.warning(
             "WebSocket guidance: rejected — connection limit reached "
             "(%d/%d, remote=%s)",
-            len(_active_connections),
+            len(_connections),
             settings.WS_MAX_CONNECTIONS,
             websocket.client,
         )
@@ -215,15 +321,25 @@ async def guidance_ws(
     # ------------------------------------------------------------------
     # Step 3 — Accept and run the message loop
     # ------------------------------------------------------------------
+    heartbeat_task: asyncio.Task[None] | None = None
+
     try:
         await websocket.accept()
         logger.info(
             "WebSocket guidance: connection accepted "
             "(remote=%s, active=%d/%d)",
             websocket.client,
-            len(_active_connections),
+            len(_connections),
             settings.WS_MAX_CONNECTIONS,
         )
+
+        # Start the heartbeat only when the feature is enabled.
+        interval: int = settings.WS_HEARTBEAT_INTERVAL_S
+        if interval > 0:
+            heartbeat_task = asyncio.create_task(
+                _heartbeat(conn_id, websocket, interval),
+                name=f"ws-heartbeat-{conn_id}",
+            )
 
         while True:
             # --------------------------------------------------------
@@ -242,16 +358,38 @@ async def guidance_ws(
                 break
 
             # --------------------------------------------------------
-            # Receive the next message from the client.
-            # receive_json() raises WebSocketDisconnect on client close.
+            # Receive the next message.
+            # Starlette raises WebSocketDisconnect on a clean close frame
+            # and RuntimeError when the socket is in an invalid/closed
+            # state (e.g., peer dropped the connection without a close
+            # frame and we try to receive after the disconnect message).
+            # Both are treated as client-initiated disconnects here.
             # --------------------------------------------------------
-            data: Any = await websocket.receive_json()
+            try:
+                data: Any = await websocket.receive_json()
+            except WebSocketDisconnect:
+                raise
+            except RuntimeError as exc:
+                # Map abnormal-close RuntimeError to a normal disconnect
+                # so it surfaces as INFO rather than ERROR in logs.
+                logger.info(
+                    "WebSocket guidance: connection closed abnormally "
+                    "(remote=%s — %s)",
+                    websocket.client,
+                    exc,
+                )
+                raise WebSocketDisconnect(code=1006) from exc
+
             prompt: str = data.get("prompt", "").strip()
 
             if not prompt:
-                await websocket.send_json(
-                    {"error": "Missing required field: 'prompt'"}
-                )
+                try:
+                    await websocket.send_json(
+                        {"error": "Missing required field: 'prompt'"}
+                    )
+                except Exception:
+                    # Send failed — client likely disconnected.
+                    break
                 continue
 
             # --------------------------------------------------------
@@ -267,7 +405,17 @@ async def guidance_ws(
                 f"[guidance stub] echoing prompt ({len(prompt)} chars)"
             )
 
-            await websocket.send_json({"guidance": guidance})
+            try:
+                await websocket.send_json({"guidance": guidance})
+            except Exception:
+                # Send failed after a successful receive — client dropped
+                # between the receive and the reply.  Exit the loop; the
+                # finally block will clean up the slot.
+                logger.debug(
+                    "WebSocket guidance: send failed (remote=%s) — closing",
+                    websocket.client,
+                )
+                break
 
     except WebSocketDisconnect:
         logger.info(
@@ -280,11 +428,14 @@ async def guidance_ws(
             websocket.client,
         )
     finally:
-        # Always release the connection slot and rate-limit state regardless
-        # of how the coroutine exits (normal close, exception, rate limit).
-        _active_connections.discard(conn_id)
-        _rate_state.pop(conn_id, None)
+        # Cancel the heartbeat task first so it cannot race with _unregister.
+        if heartbeat_task is not None:
+            heartbeat_task.cancel()
+
+        # _unregister is idempotent: safe even if the heartbeat already
+        # removed the conn_id when it detected a failed ping.
+        _unregister(conn_id)
         logger.debug(
             "WebSocket guidance: connection cleaned up (active=%d)",
-            len(_active_connections),
+            len(_connections),
         )

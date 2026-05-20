@@ -64,6 +64,9 @@ class Settings:
     # per WS_RATE_LIMIT_WINDOW_S seconds per connection.
     WS_RATE_LIMIT_MESSAGES: int = 30
     WS_RATE_LIMIT_WINDOW_S: int = 60
+    # Seconds between server-initiated pings sent to each connection.
+    # Set to 0 to disable the heartbeat entirely.
+    WS_HEARTBEAT_INTERVAL_S: int = 30
 
     # Privacy Configuration
     PRIVACY_MASKING_ENABLED: bool = True
@@ -130,6 +133,8 @@ class Settings:
             self.WS_RATE_LIMIT_MESSAGES = int(env_val)
         if env_val := os.getenv("WS_RATE_LIMIT_WINDOW_S"):
             self.WS_RATE_LIMIT_WINDOW_S = int(env_val)
+        if env_val := os.getenv("WS_HEARTBEAT_INTERVAL_S"):
+            self.WS_HEARTBEAT_INTERVAL_S = int(env_val)
 
         # Privacy Configuration
         if env_val := os.getenv("PRIVACY_MASKING_ENABLED"):
