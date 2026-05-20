@@ -26,12 +26,18 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event():
     logger.info("Execra API starting...")
+    from api.websockets.router import broadcast_action_log
+    from core.hybrid.action_logger import action_logger
+    action_logger.register_callback(broadcast_action_log)
 
 
 # Shutdown event
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info("Execra API shutting down...")
+    from api.websockets.router import broadcast_action_log
+    from core.hybrid.action_logger import action_logger
+    action_logger.unregister_callback(broadcast_action_log)
 
 
 # Root endpoint
