@@ -2,7 +2,7 @@ import logging
 import time
 from collections import OrderedDict
 from core.hybrid.guidance_dispatcher import GuidanceInstruction
-
+from core.config import settings
 logger = logging.getLogger(__name__)
 
 class AlertSuppressor:
@@ -63,8 +63,9 @@ class AlertSuppressor:
     
 
 # Shared instance — initialized with default cooldowns from config
+
 alert_suppressor = AlertSuppressor(cooldown_map={
-    "info": 60,
-    "warning": 30,
+    "info": settings.ALERT_COOLDOWN_INFO,
+    "warning": settings.ALERT_COOLDOWN_WARNING,
     "critical": 0
 })
