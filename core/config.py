@@ -4,9 +4,8 @@ Modules should import settings from here instead of os.getenv().
 """
 
 import os
-from typing import Optional
+from typing import List, Optional
 from dataclasses import dataclass, field
-from typing import Optional
 
 from dotenv import load_dotenv
 from core.utils.env_validator import assert_env
